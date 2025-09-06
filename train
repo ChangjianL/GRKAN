@@ -36,25 +36,12 @@ class GRKAN(nn.Module):
         super(GRKAN, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
-        # self.Wz = nn.Linear(input_size + hidden_size, hidden_size).to('cuda')
-        # self.Wr = nn.Linear(input_size + hidden_size, hidden_size).to('cuda')
-        # self.Wf = nn.Linear(input_size + hidden_size, hidden_size).to('cuda')
         self.W = nn.Parameter(torch.Tensor(input_size + hidden_size, hidden_size * 3))
         self.bias = nn.Parameter(torch.Tensor(hidden_size * 3))
         self.init_weights()
 
-        # self.Wc = nn.Linear(input_size + hidden_size, hidden_size)  # 12 -> 10
-        # self.sigmoid = nn.Sigmoid().to('cuda')
-        # self.kan1 = KAN(width=[input_size + hidden_size, hidden_size],
-        #                 symbolic_enabled=False, base_fun=nn.Tanh(), device='cuda:0')  
-        # self.kan2 = KAN(width=[hidden_size + hidden_size, hidden_size],
-        #                 symbolic_enabled=False, base_fun=nn.Tanh(), device='cuda:0')  
-        # self.kan1 = KAN(width=[input_size + hidden_size, hidden_size],
-        #                 symbolic_enabled=False, base_fun=nn.SiLU(), device='cuda:0')  
-        # self.kan2 = KAN(width=[hidden_size + hidden_size, hidden_size],
-        #                 symbolic_enabled=False, base_fun=nn.SiLU(), device='cuda:0')  
-        self.kan1 = KAN([input_size + hidden_size, hidden_size], base_activation=nn.Tanh()) 
-        self.kan2 = KAN([hidden_size + hidden_size, hidden_size], base_activation=nn.Tanh()) 
+        self.kan1 = KAN([input_size + hidden_size, hidden_size], base_activation=nn.Tanh())
+        self.kan2 = KAN([hidden_size + hidden_size, hidden_size], base_activation=nn.Tanh())
 
     def init_weights(self):
         stdv = 1.0 / math.sqrt(self.hidden_size)
@@ -64,12 +51,12 @@ class GRKAN(nn.Module):
     def forward(self, input):
         batch_size = input.size(0)
         seq_len = input.size(1)
-        hidden_state = torch.zeros(batch_size, self.hidden_size, dtype=torch.float32).to('cuda')  # (1,10)
+        hidden_state = torch.zeros(batch_size, self.hidden_size, dtype=torch.float32).to('cuda') 
         cell_state = torch.zeros(batch_size, self.hidden_size, dtype=torch.float32).to('cuda')
         outputs = []
         HS = self.hidden_size
         for i in range(seq_len):
-            combined = torch.cat((input[:, i, :], hidden_state), dim=1)  # (1,2)（时间步，特征）+(1,10)=(1,12)
+            combined = torch.cat((input[:, i, :], hidden_state), dim=1)
             gates = combined @ self.W + self.bias
             z_t, r_t, f_t = (
                 torch.sigmoid(gates[:, :HS]),  # upset
@@ -77,18 +64,13 @@ class GRKAN(nn.Module):
                 torch.sigmoid(gates[:, HS * 2:]),  # forget
             )
 
-            # z_t = self.sigmoid(self.Wz(combined))  # (1,c)
-            # r_t = self.sigmoid(self.Wr(combined))
-            # f_t = self.sigmoid(self.Wf(combined))
-
             combined = torch.cat((input[:, i, :], r_t * hidden_state), dim=1)
             c_hat_t = self.kan1(combined)
-            # cell_state = f_t * cell_state + (1-f_t) * c_hat_t#(1,10)
-            cell_state = self.kan2(torch.cat((c_hat_t, f_t * cell_state), dim=1))  # (1,c)
-            hidden_state = (1-z_t) * hidden_state + z_t * cell_state  # (1,c)
-            outputs.append(hidden_state.unsqueeze(1))  # (b,+1,c)
-        outputs = torch.cat(outputs, dim=1)  # 80个outputs (b,t,c)
-        return outputs, hidden_state  # , (hidden_state, cell_state)  
+            cell_state = self.kan2(torch.cat((c_hat_t, f_t * cell_state), dim=1)) 
+            hidden_state = (1-z_t) * hidden_state + z_t * cell_state 
+            outputs.append(hidden_state.unsqueeze(1)) 
+        outputs = torch.cat(outputs, dim=1)  
+        return outputs, hidden_state  
 
 
 class GateRecurrentKan(nn.Module):
@@ -103,16 +85,15 @@ class GateRecurrentKan(nn.Module):
         self.Norm_1 = nn.LayerNorm([10, dim[0]])
         self.Norm_2 = nn.LayerNorm([10, dim[1]])
         self.Norm_3 = nn.LayerNorm(dim[1])
-        
+
         self.grukan_1 = GRKAN(dim[0], dim[0]).to('cuda')
         self.grukan_2 = GRKAN(dim[0], dim[1]).to('cuda')
-        #
+
         fnn1 = nn.Linear(dim[1], dim[1] // 2).to('cuda')
         torch.nn.init.xavier_normal_(fnn1.weight.data)
         fnn2 = nn.Linear(dim[1] // 2, 40).to('cuda')
         torch.nn.init.xavier_normal_(fnn2.weight.data)
         self.out_proj = nn.Sequential(fnn1, nn.Tanh(), fnn2, nn.Tanh())
-
 
 
     def forward(self, x):
@@ -125,7 +106,7 @@ class GateRecurrentKan(nn.Module):
         x = self.Norm_2(x)
         x, h = self.grukan_2(x)
         h = self.Norm_3(h)
-    
+
         x = self.out_proj(h).view(b, w, c)
         return x
 
@@ -137,24 +118,19 @@ def model_fit():
 
     train_dataloader = DataLoader(train_data, batch_size=64, shuffle=True, num_workers=0)
     test_dataloader = DataLoader(test_data, batch_size=64, shuffle=True, num_workers=0)
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        print("使用GPU训练中：{}".format(torch.cuda.get_device_name()))
-    else:
-        device = torch.device("cpu")
-        print("使用CPU训练")
+
     mymodule = GateRecurrentKan(dim=[64, 64], num_layer=2)
     mymodule = mymodule.to(device) 
 
     loss = torch.nn.MSELoss()
     learn_step = 0.001
     optim = torch.optim.Adam(mymodule.parameters(), lr=learn_step)
-    epoch = 2
+    epoch = 4000
     train_loss = []
     test_loss = []
 
     for i in range(epoch):
-        mymodule.train()  
+        mymodule.train() 
         epoch_loss = 0
         train_step = 0
 
@@ -171,14 +147,12 @@ def model_fit():
 
             train_step += 1
             epoch_loss += result_loss.item()
-            if train_step % 100 == 0:
-                print("第{}轮的第{}次训练的loss:{}".format((i + 1), train_step, result_loss.item()))
+
         train_loss.append(epoch_loss / train_step)
-        print("第{}轮训练的loss:{}".format((i + 1), epoch_loss / train_step))
         mymodule.eval()  
         val_loss = 0
         tt = 0
-        with torch.no_grad():  
+        with torch.no_grad(): 
             for test_data in test_dataloader:
                 tt += 1
                 encoder_data, label = test_data
@@ -190,12 +164,14 @@ def model_fit():
             test_loss.append(val_loss / tt)
 
         if (i + 1) % 50 == 0 or i == 1:
-            torch.save(mymodule.state_dict(), "module_{}.pth".format((i + 1)))
-            print("第{}轮训练在测试集上的Loss为{}".format((i + 1), test_result_loss.item()))
+            torch.save(mymodule.state_dict(), "train_model_efficient/mymodule_{}.pth".format((i + 1)))
+            print("{}th Loss is {}".format((i + 1), test_result_loss.item()))
     loss_value = np.array(train_loss)
+    loss_value.tofile("train_loss_efficient/loss.dat", sep=",", format="%f")
     val_loss_value = np.array(test_loss)
+    val_loss_value.tofile("train_loss_efficient/val_loss.dat", sep=",", format="%f")
     k = [i - 0.5 for i in range(len(loss_value))]
-    # # 绘制训练 & 验证的损失值
+
     plt.figure(1)
     plt.plot(k, loss_value)
     plt.plot(k, val_loss_value)
@@ -208,21 +184,13 @@ def model_fit():
 
 
 def model_predict():
-
     test_data = MyDataset().test_set()
     n = 1
-    factor_set = np.fromfile("test_factor_set_10_230_2.dat", dtype=float, sep=",").reshape((n*239, 2))
-
     test_dataloader = DataLoader(test_data, batch_size=1, shuffle=False, num_workers=0)
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        print("使用GPU训练中：{}".format(torch.cuda.get_device_name()))
-    else:
-        device = torch.device("cpu")
-        print("使用CPU训练")
+
     mymodule = GateRecurrentKan(dim=[64, 64], num_layer=2)
-    mymodule = mymodule.to(device)  
-    mymodule.load_state_dict(torch.load("module_{}.pth".format(3700)))
+    mymodule = mymodule.to(device) 
+    mymodule.load_state_dict(torch.load("mymodule_{}.pth".format(3850)))
 
     mymodule.eval()
     out_all = []
@@ -236,17 +204,25 @@ def model_predict():
         for data in test_dataloader:
             encoder_data, targets = data
             encoder_data = encoder_data.to(device)
-            
+           
             outputs = mymodule(encoder_data)
-            det_t += time.time() - t1
             out_all.append(outputs[0].tolist())
             label.append(targets[0].tolist())
             encoder_input.append(encoder_data[0].tolist())
-
-    out_all = np.array(out_all)  
+           
+    out_all = np.array(out_all)
     label = np.array(label) 
-
-
+   
+    out_mean = np.mean(out_all, 1)
+    
+    out_mean = out_mean.reshape((n, -1, 2))
+    label = label.reshape((n, -1, 2))
+    det = out_mean - label
+    error = np.sqrt(np.power(det[:, :, 0], 2) + np.power(det[:, :, 1], 2))
+    rmse = np.mean(error, 0)
+    plt.figure(2)
+    plt.plot(rmse)
+   
     plt.show()
     return
 
@@ -254,5 +230,3 @@ def model_predict():
 if __name__ == '__main__':
     # model_fit()
     model_predict()
-    # train_ = MyTrainDataset()
-    # train_.plot_data()
