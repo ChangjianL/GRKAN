@@ -26,11 +26,6 @@ class MyDataset:
         return TensorDataset(torch.tensor(test_data), torch.tensor(test_label))
 
 
-def adjust_learning_rate(optimizer):
-    lr = optimizer.param_groups[0]['lr'] * 10
-    return lr
-
-
 class GRKAN(nn.Module):
     def __init__(self, input_size, hidden_size):
         super(GRKAN, self).__init__()
